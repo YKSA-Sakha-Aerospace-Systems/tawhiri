@@ -30,6 +30,22 @@ _PI_180 = math.pi / 180.0
 _180_PI = 180.0 / math.pi
 
 
+## Interpolation ##############################################################
+
+
+def _interpolate_rate(alt, curve):
+    if alt < curve[0][0]:
+        return curve[0][1]
+    if alt >= curve[-1][0]:
+        return curve[-1][1]
+    for i in range(len(curve)-1):
+        if curve[i][1] <= alt <= curve[i+1][1]:
+            a1, r1 = curve[i]
+            a2, r2 = curve[i+1]
+            return r1 + (r2 - r1) * (alt - a1) / (a2 - a1)
+    return curve[-1][1]
+
+
 ## Up/Down Models #############################################################
 
 
@@ -38,6 +54,23 @@ def make_constant_ascent(ascent_rate):
     def constant_ascent(t, lat, lng, alt):
         return 0.0, 0.0, ascent_rate
     return constant_ascent
+
+
+def make_custom_ascent(ascent_curve):
+    """Return a custom-ascent model, where `ascent_curve` is a list of tuples
+        (alt,rate) where alt is the altitude in meters at which the rate
+        changes and rate is the new rate. The curve is interpolated between
+        the points given in the list. The curve is assumed to start at the
+        first point and end at the last point, and the rate is assumed to be
+        constant before the first point and after the last point.
+    """
+
+    # sort by altitude
+    curve_normalized = sorted(ascent_curve, key=lambda x: x[0])
+
+    def custom_ascent(t, lat, lng, alt):
+        return 0.0, 0.0, _interpolate_rate(alt, curve_normalized)
+    return custom_ascent
 
 
 def make_drag_descent(sea_level_descent_rate):
@@ -68,6 +101,18 @@ def make_drag_descent(sea_level_descent_rate):
     def drag_descent(t, lat, lng, alt):
         return 0.0, 0.0, -drag_coefficient/math.sqrt(density(alt))
     return drag_descent
+
+
+def make_custom_descent(descent_curve):
+    """Works the same as make_custom_ascent, but for descent curves.
+    """
+
+    # sort by altitude
+    curve_normalized = sorted(descent_curve, key=lambda x: x[0], reverse=True)
+
+    def custom_descent(t, lat, lng, alt):
+        return 0.0, 0.0, _interpolate_rate(alt, curve_normalized)
+    return custom_descent
 
 
 ## Sideways Models ############################################################
@@ -195,3 +240,23 @@ def float_profile(ascent_rate, float_altitude, stop_time, dataset, warningcounts
     term_float = make_time_termination(stop_time)
 
     return ((model_up, term_up), (model_float, term_float))
+
+
+def custom_profile(ascent_curve, burst_altitude, descent_curve,
+                     wind_dataset, elevation_dataset, warningcounts):
+    """Make a model chain for a custom balloon situation, where the ascent and
+         descent rates are determined by the given curves. The burst altitude is
+         given, and the wind dataset is used for lateral movement.
+     """
+
+    model_up = make_linear_model([make_custom_ascent(ascent_curve),
+                                  make_wind_velocity(wind_dataset, warningcounts)])
+    term_up = make_burst_termination(burst_altitude)
+
+    model_down = make_linear_model([make_custom_descent(descent_curve),
+                                    make_wind_velocity(wind_dataset, warningcounts)])
+
+    term_down = make_elevation_data_termination(elevation_dataset)
+
+    return ((model_up, term_up), (model_down, term_down))
+    
