@@ -24,6 +24,7 @@ from datetime import datetime
 import time
 import strict_rfc3339
 from io import BytesIO
+import base64
 
 from tawhiri import solver, models
 from tawhiri.dataset import Dataset as WindDataset
@@ -34,12 +35,13 @@ from ruaumoko import Dataset as ElevationDataset
 
 app = Flask(__name__)
 
-API_VERSION = 1
+API_VERSION = 2
 LATEST_DATASET_KEYWORD = "latest"
 PROFILE_STANDARD = "standard_profile"
 PROFILE_FLOAT = "float_profile"
 PROFILE_REVERSE = "reverse_profile"
 STANDARD_FORMAT = "json"
+PROFILE_CUSTOM = "custom_profile"
 
 
 # Util functions ##############################################################
@@ -62,6 +64,48 @@ def _timestamp_to_rfc3339(dt):
     Convert from a UNIX timestamp to a RFC3339 timestamp.
     """
     return strict_rfc3339.timestamp_to_rfc3339_utcoffset(dt)
+
+def _base64_to_curve(data):
+    """
+    Convert a base64 encoded CSV to a list of tuples.
+    """
+    data = base64.b64decode(data)
+    data = data.split("\n")
+    return [tuple(map(float, line.split(","))) for line in data if line]
+
+
+# Custom profile helpers ######################################################
+def validate_custom_curve(data):
+    """
+    Validate the custom profile data.
+
+    The custom profile data is a list of tuples, each tuple containing one line
+    of CSV data. The CSV data should be in the format:
+
+    altitute,rate
+    """
+
+    # Check that the data is a list
+    if not isinstance(data, list):
+        return False
+
+    # Check that each element is a tuple
+    for line in data:
+        if not isinstance(line, tuple):
+            return False
+
+    # Check that each tuple contains 2 elements
+    for line in data:
+        if len(line) != 2:
+            return False
+
+    # Check that each element in the tuple is a float
+    for line in data:
+        for element in line:
+            if not isinstance(element, float):
+                return False
+
+    return True
 
 
 # Exceptions ##################################################################
@@ -179,6 +223,16 @@ def parse_request(data):
     elif req['profile'] == PROFILE_REVERSE:
         req['ascent_rate'] = rate_clip(_extract_parameter(data, "ascent_rate", float,
                                                 validator=lambda x: x > 0))
+    elif req['profile'] == PROFILE_CUSTOM:
+        req['ascent_curve'] = _extract_parameter(data, "ascent_curve",
+                                                    _base64_to_curve,
+                                                    validator=validate_custom_curve)
+        req['burst_altitude'] = \
+            _extract_parameter(data, "burst_altitude", float,
+                               validator=lambda x: x > launch_alt)                                                  
+        req['descent_curve'] = _extract_parameter(data, "descent_curve",
+                                                    _base64_to_curve,
+                                                    validator=validate_custom_curve)
     else:
         raise RequestException("Unknown profile '%s'." % req['profile'])
 
@@ -328,6 +382,12 @@ def run_prediction(req):
                                       tawhiri_ds,
                                       ruaumoko_ds(),
                                       warningcounts)
+    elif req['profile'] == PROFILE_CUSTOM:
+        stages = models.custom_profile(req['ascent_curve'],
+                                       req['burst_altitude'],
+                                       req['descent_curve'],
+                                       tawhiri_ds,
+                                       warningcounts)
     else:
         raise InternalException("No implementation for known profile.")
 
@@ -362,7 +422,8 @@ def run_prediction(req):
             'altitude': _launch_site['altitude'],
             'datetime': _timestamp_to_rfc3339(req['launch_datetime'])
         }
-
+    elif req['profile'] == PROFILE_CUSTOM:
+        resp['prediction'] = _parse_stages(["ascent", "descent"], result)
     else:
         raise InternalException("No implementation for known profile.")
 
