@@ -70,8 +70,8 @@ def _base64_to_curve(data):
     Convert a base64 encoded CSV to a list of tuples.
     """
     data = base64.b64decode(data)
-    data = data.split("\n")
-    return [tuple(map(float, line.split(","))) for line in data if line]
+    data = data.split(b"\n")
+    return [tuple(map(float, line.split(b","))) for line in data if line]
 
 
 # Custom profile helpers ######################################################
@@ -387,6 +387,7 @@ def run_prediction(req):
                                        req['burst_altitude'],
                                        req['descent_curve'],
                                        tawhiri_ds,
+                                       ruaumoko_ds(),
                                        warningcounts)
     else:
         raise InternalException("No implementation for known profile.")
