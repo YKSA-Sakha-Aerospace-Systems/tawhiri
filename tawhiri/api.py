@@ -23,6 +23,7 @@ from flask import Flask, jsonify, request, g
 from datetime import datetime
 import time
 import strict_rfc3339
+from io import BytesIO
 import base64
 
 from tawhiri import solver, models
@@ -36,6 +37,8 @@ API_VERSION = 2
 LATEST_DATASET_KEYWORD = "latest"
 PROFILE_STANDARD = "standard_profile"
 PROFILE_FLOAT = "float_profile"
+PROFILE_REVERSE = "reverse_profile"
+STANDARD_FORMAT = "json"
 PROFILE_CUSTOM = "custom_profile"
 
 
@@ -197,6 +200,9 @@ def parse_request(data):
         req['stop_datetime'] = \
             _extract_parameter(data, "stop_datetime", _rfc3339_to_timestamp,
                                validator=lambda x: x > req['launch_datetime'])
+    elif req['profile'] == PROFILE_REVERSE:
+        req['ascent_rate'] = rate_clip(_extract_parameter(data, "ascent_rate", float,
+                                                validator=lambda x: x > 0))
     elif req['profile'] == PROFILE_CUSTOM:
         req['ascent_curve'] = _extract_parameter(data, "ascent_curve",
                                                     _base64_to_curve,
@@ -287,6 +293,11 @@ def run_prediction(req):
                                       req['stop_datetime'],
                                       tawhiri_ds,
                                       warningcounts)
+    elif req['profile'] == PROFILE_REVERSE:
+        stages = models.reverse_profile(req['ascent_rate'],
+                                      tawhiri_ds,
+                                      ruaumoko_ds(),
+                                      warningcounts)
     elif req['profile'] == PROFILE_CUSTOM:
         stages = models.custom_profile(req['ascent_curve'],
                                        req['burst_altitude'],
@@ -310,6 +321,16 @@ def run_prediction(req):
         resp['prediction'] = _parse_stages(["ascent", "descent"], result)
     elif req['profile'] == PROFILE_FLOAT:
         resp['prediction'] = _parse_stages(["ascent", "float"], result)
+    elif req['profile'] == PROFILE_CUSTOM:
+        resp['prediction'] = _parse_stages(["ascent", "descent"], result)
+        # Extract the last entry as our launch site estimate.
+        _launch_site = resp['prediction'][-1]['trajectory'][-1]
+        resp['launch_estimate'] = {
+            'latitude': _launch_site['latitude'], 
+            'longitude': _launch_site['longitude'],
+            'altitude': _launch_site['altitude'],
+            'datetime': _timestamp_to_rfc3339(req['launch_datetime'])
+        }
     elif req['profile'] == PROFILE_CUSTOM:
         resp['prediction'] = _parse_stages(["ascent", "descent"], result)
     else:

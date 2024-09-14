@@ -259,4 +259,23 @@ def custom_profile(ascent_curve, burst_altitude, descent_curve,
     term_down = make_elevation_data_termination(elevation_dataset)
 
     return ((model_up, term_up), (model_down, term_down))
+
+
+def custom_profile(ascent_curve, burst_altitude, descent_curve,
+                     wind_dataset, elevation_dataset, warningcounts):
+    """Make a model chain for a custom balloon situation, where the ascent and
+         descent rates are determined by the given curves. The burst altitude is
+         given, and the wind dataset is used for lateral movement.
+     """
+
+    model_up = make_linear_model([make_custom_ascent(ascent_curve),
+                                  make_wind_velocity(wind_dataset, warningcounts)])
+    term_up = make_burst_termination(burst_altitude)
+
+    model_down = make_linear_model([make_custom_descent(descent_curve),
+                                    make_wind_velocity(wind_dataset, warningcounts)])
+
+    term_down = make_elevation_data_termination(elevation_dataset)
+
+    return ((model_up, term_up), (model_down, term_down))
     
