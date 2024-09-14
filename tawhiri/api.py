@@ -303,6 +303,7 @@ def run_prediction(req):
                                        req['burst_altitude'],
                                        req['descent_curve'],
                                        tawhiri_ds,
+                                       ruaumoko_ds(),
                                        warningcounts)
     else:
         raise InternalException("No implementation for known profile.")

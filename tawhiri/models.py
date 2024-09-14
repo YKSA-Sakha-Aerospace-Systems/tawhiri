@@ -39,7 +39,7 @@ def _interpolate_rate(alt, curve):
     if alt >= curve[-1][0]:
         return curve[-1][1]
     for i in range(len(curve)-1):
-        if curve[i][1] <= alt <= curve[i+1][1]:
+        if curve[i][0] <= alt <= curve[i+1][0]:
             a1, r1 = curve[i]
             a2, r2 = curve[i+1]
             return r1 + (r2 - r1) * (alt - a1) / (a2 - a1)
@@ -108,10 +108,10 @@ def make_custom_descent(descent_curve):
     """
 
     # sort by altitude
-    curve_normalized = sorted(descent_curve, key=lambda x: x[0], reverse=True)
+    curve_normalized = sorted(descent_curve, key=lambda x: x[0])
 
     def custom_descent(t, lat, lng, alt):
-        return 0.0, 0.0, _interpolate_rate(alt, curve_normalized)
+        return 0.0, 0.0, -_interpolate_rate(alt, curve_normalized)
     return custom_descent
 
 
@@ -260,22 +260,4 @@ def custom_profile(ascent_curve, burst_altitude, descent_curve,
 
     return ((model_up, term_up), (model_down, term_down))
 
-
-def custom_profile(ascent_curve, burst_altitude, descent_curve,
-                     wind_dataset, elevation_dataset, warningcounts):
-    """Make a model chain for a custom balloon situation, where the ascent and
-         descent rates are determined by the given curves. The burst altitude is
-         given, and the wind dataset is used for lateral movement.
-     """
-
-    model_up = make_linear_model([make_custom_ascent(ascent_curve),
-                                  make_wind_velocity(wind_dataset, warningcounts)])
-    term_up = make_burst_termination(burst_altitude)
-
-    model_down = make_linear_model([make_custom_descent(descent_curve),
-                                    make_wind_velocity(wind_dataset, warningcounts)])
-
-    term_down = make_elevation_data_termination(elevation_dataset)
-
-    return ((model_up, term_up), (model_down, term_down))
     
