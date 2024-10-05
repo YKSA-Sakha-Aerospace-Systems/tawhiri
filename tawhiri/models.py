@@ -100,7 +100,7 @@ def make_custom_ascent2(ascent_curve, interpolate=False):
     return custom_ascent
 
 
-def make_custom_ascent3(ascent_curve, interpolate=False):
+def make_custom_ascent3(launch_datetime, ascent_curve, interpolate=False):
     """Return a custom-ascent model, where `ascent_curve` is a list of tuples
         (time, alt, rate) where time is the time in seconds at which the rate
         changes, alt is the altitude in meters at which the rate changes and
@@ -110,8 +110,9 @@ def make_custom_ascent3(ascent_curve, interpolate=False):
     c_last = 0
     rate = 0.0
 
-    def custom_ascent(t, lat, lng, alt):
+    def custom_ascent(t_abs, lat, lng, alt):
         nonlocal c_last, rate
+        t =  t_abs - launch_datetime
         c_last_last = c_last
         rate_last = rate
         c_last, rate = _resolve_constraints(
@@ -165,15 +166,16 @@ def make_custom_descent2(descent_curve, interpolate=False):
     return custom_descent
 
 
-def make_custom_descent3(descent_curve, interpolate=False):
+def make_custom_descent3(launch_datetime, descent_curve, interpolate=False):
     """Works the same as make_custom_ascent3, but for descent curves.
     """
 
     c_last = 0
     rate = 0.0
 
-    def custom_descent(t, lat, lng, alt):
+    def custom_descent(t_abs, lat, lng, alt):
         nonlocal c_last, rate
+        t =  t_abs - launch_datetime
         c_last_last = c_last
         rate_last = rate
         c_last, rate = _resolve_constraints(
@@ -328,20 +330,14 @@ def custom_profile(launch_datetime, ascent_curve, burst_altitude, descent_curve,
     descent_curve_normalized = sorted(descent_curve, key=lambda x: x[0])
 
     if len(ascent_curve_normalized[0]) == 3:
-        ascent_curve_normalized = list(map(lambda x: [
-                                       x[0] + launch_datetime if x[0] != -1 else -1, x[1], x[2]], \
-                                       ascent_curve_normalized))
-        model_up = make_linear_model([make_custom_ascent3(ascent_curve_normalized, interpolate),
+        model_up = make_linear_model([make_custom_ascent3(launch_datetime, ascent_curve_normalized, interpolate),
                                       make_wind_velocity(wind_dataset, warningcounts)])
     else:
         model_up = make_linear_model([make_custom_ascent2(ascent_curve_normalized, interpolate),
                                       make_wind_velocity(wind_dataset, warningcounts)])
 
     if len(descent_curve_normalized[0]) == 3:
-        descent_curve_normalized = list(map(lambda x: [
-                                        x[0] + launch_datetime if x[0] != -1 else -1, x[1], x[2]], \
-                                        descent_curve_normalized))
-        model_down = make_linear_model([make_custom_descent3(descent_curve_normalized, interpolate),
+        model_down = make_linear_model([make_custom_descent3(launch_datetime, descent_curve_normalized, interpolate),
                                         make_wind_velocity(wind_dataset, warningcounts)])
     else:
         model_down = make_linear_model([make_custom_descent2(descent_curve_normalized, interpolate),
