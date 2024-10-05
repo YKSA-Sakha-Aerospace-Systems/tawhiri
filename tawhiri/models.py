@@ -61,7 +61,7 @@ def _resolve_constraints(constraints, c_last, t, alt, rate):
     j = c_last
     while j < len(constraints):
         if constraints[j][1] != -1:
-            if rate > 0 and constraints[j][1] >= alt:
+            if rate >= 0 and constraints[j][1] >= alt:
                 break
             elif rate < 0 and constraints[j][1] <= alt:
                 break
