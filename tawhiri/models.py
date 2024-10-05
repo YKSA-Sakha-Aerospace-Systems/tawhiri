@@ -327,18 +327,18 @@ def custom_profile(launch_datetime, ascent_curve, burst_altitude, descent_curve,
 
     if len(ascent_curve_normalized[0]) == 3:
         map(lambda x: x[0] + launch_datetime, ascent_curve_normalized)
-        model_up = make_linear_model([make_custom_ascent3(ascent_curve, interpolate),
+        model_up = make_linear_model([make_custom_ascent3(ascent_curve_normalized, interpolate),
                                   make_wind_velocity(wind_dataset, warningcounts)])
     else:
-        model_up = make_linear_model([make_custom_ascent2(ascent_curve, interpolate),
+        model_up = make_linear_model([make_custom_ascent2(ascent_curve_normalized, interpolate),
                                   make_wind_velocity(wind_dataset, warningcounts)])
     
     if len(descent_curve_normalized[0]) == 3:
         map(lambda x: x[0] + launch_datetime, descent_curve_normalized)
-        model_down = make_linear_model([make_custom_descent3(descent_curve, interpolate),
+        model_down = make_linear_model([make_custom_descent3(descent_curve_normalized, interpolate),
                                     make_wind_velocity(wind_dataset, warningcounts)])
     else:
-        model_down = make_linear_model([make_custom_descent2(descent_curve, interpolate),
+        model_down = make_linear_model([make_custom_descent2(descent_curve_normalized, interpolate),
                                     make_wind_velocity(wind_dataset, warningcounts)])
 
     
