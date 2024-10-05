@@ -30,21 +30,50 @@ _PI_180 = math.pi / 180.0
 _180_PI = 180.0 / math.pi
 
 
-## Interpolation ##############################################################
+## Curve operations ############################################################
 
 
-def _interpolate_rate(alt, curve):
-    if alt < curve[0][0]:
-        return curve[0][1]
-    if alt >= curve[-1][0]:
-        return curve[-1][1]
-    for i in range(len(curve)-1):
-        if curve[i][0] <= alt <= curve[i+1][0]:
-            a1, r1 = curve[i]
-            a2, r2 = curve[i+1]
-            return r1 + (r2 - r1) * (alt - a1) / (a2 - a1)
-    return curve[-1][1]
+def _resolve_rate(x, y, x_idx=0, r_idx=1, interpolate=False):
+    if x < y[0][x_idx]:
+        return y[0][r_idx]
+    if x >= y[-1][x_idx]:
+        return y[-1][r_idx]
+    for i in range(len(y)-1):
+        if y[i][x_idx] <= x <= y[i+1][x_idx]:
+            a1 = y[i][x_idx]
+            r1 = y[i][r_idx]
+            a2 = y[i+1][x_idx]
+            r2 = y[i+1][r_idx]
+            if interpolate:
+                return r1 + (r2 - r1) * (x - a1) / (a2 - a1)
+            else:
+                return r1
+    return y[-1][r_idx]
 
+
+def _resolve_constraints(constraints, c_last, t, alt, rate):
+    i = c_last
+    while i < len(constraints):
+        if constraints[i][0] == -1 or constraints[i][0] > t:
+            break
+        i += 1
+
+    j = c_last
+    while j < len(constraints):
+        if constraints[j][1] != -1:
+            if rate > 0 and constraints[j][1] >= alt:
+                break
+            elif rate < 0 and constraints[j][1] <= alt:
+                break
+        else:
+            break
+        j += 1
+
+    k = max(i, j)
+    if k >= len(constraints):
+        k = len(constraints)-1
+
+    return k, constraints[k][2]
 
 ## Up/Down Models #############################################################
 
@@ -56,7 +85,7 @@ def make_constant_ascent(ascent_rate):
     return constant_ascent
 
 
-def make_custom_ascent(ascent_curve):
+def make_custom_ascent2(ascent_curve, interpolate=False):
     """Return a custom-ascent model, where `ascent_curve` is a list of tuples
         (alt,rate) where alt is the altitude in meters at which the rate
         changes and rate is the new rate. The curve is interpolated between
@@ -65,11 +94,34 @@ def make_custom_ascent(ascent_curve):
         constant before the first point and after the last point.
     """
 
-    # sort by altitude
-    curve_normalized = sorted(ascent_curve, key=lambda x: x[0])
+    def custom_ascent(t, lat, lng, alt):
+        return 0.0, 0.0, _resolve_rate(alt, ascent_curve, interpolate=interpolate)
+
+    return custom_ascent
+
+
+def make_custom_ascent3(ascent_curve, interpolate=False):
+    """Return a custom-ascent model, where `ascent_curve` is a list of tuples
+        (time, alt, rate) where time is the time in seconds at which the rate
+        changes, alt is the altitude in meters at which the rate changes and
+        rate is the new rate.
+    """
+
+    c_last = 0
+    rate = 0.0
 
     def custom_ascent(t, lat, lng, alt):
-        return 0.0, 0.0, _interpolate_rate(alt, curve_normalized)
+        nonlocal c_last, rate
+        c_last_last = c_last
+        rate_last = rate
+        c_last, rate = _resolve_constraints(ascent_curve, c_last, t, alt, rate)
+
+        if interpolate:
+            rate = rate + (rate - rate_last) * (t - ascent_curve[c_last_last][0]) / \
+            (ascent_curve[c_last][0] - ascent_curve[c_last_last][0])
+
+        return 0.0, 0.0, rate
+
     return custom_ascent
 
 
@@ -103,17 +155,35 @@ def make_drag_descent(sea_level_descent_rate):
     return drag_descent
 
 
-def make_custom_descent(descent_curve):
-    """Works the same as make_custom_ascent, but for descent curves.
+def make_custom_descent2(descent_curve, interpolate=False):
+    """Works the same as make_custom_ascent2, but for descent curves.
     """
 
-    # sort by altitude
-    curve_normalized = sorted(descent_curve, key=lambda x: x[0])
-
     def custom_descent(t, lat, lng, alt):
-        return 0.0, 0.0, -_interpolate_rate(alt, curve_normalized)
+        return 0.0, 0.0, -_resolve_rate(alt, descent_curve, interpolate=interpolate)
     return custom_descent
 
+
+def make_custom_descent3(descent_curve, interpolate=False):
+    """Works the same as make_custom_ascent3, but for descent curves.
+    """
+
+    c_last = 0
+    rate = 0.0
+
+    def custom_descent(t, lat, lng, alt):
+        nonlocal c_last, rate
+        c_last_last = c_last
+        rate_last = rate
+        c_last, rate = _resolve_constraints(descent_curve, c_last, t, alt, rate)
+
+        if interpolate:
+            rate = rate + (rate - rate_last) * (t - descent_curve[c_last_last][0]) / \
+            (descent_curve[c_last][0] - descent_curve[c_last_last][0])
+
+        return 0.0, 0.0, -rate
+
+    return custom_descent
 
 ## Sideways Models ############################################################
 
@@ -125,6 +195,7 @@ def make_wind_velocity(dataset, warningcounts):
     """
     get_wind = interpolate.make_interpolator(dataset, warningcounts)
     dataset_epoch = calendar.timegm(dataset.ds_time.timetuple())
+
     def wind_velocity(t, lat, lng, alt):
         t -= dataset_epoch
         u, v = get_wind(t / 3600.0, lat, lng, alt)
@@ -157,6 +228,7 @@ def sea_level_termination(t, lat, lng, alt):
     if alt <= 0:
         return True
 
+
 def make_elevation_data_termination(dataset=None):
     """A termination criteria which terminates integration when the
        altitude goes below ground level, using the elevation data
@@ -165,6 +237,7 @@ def make_elevation_data_termination(dataset=None):
     def tc(t, lat, lng, alt):
         return dataset.get(lat, lng) > alt
     return tc
+
 
 def make_time_termination(max_time):
     """A time based termination criteria, which terminates integration when
@@ -242,22 +315,35 @@ def float_profile(ascent_rate, float_altitude, stop_time, dataset, warningcounts
     return ((model_up, term_up), (model_float, term_float))
 
 
-def custom_profile(ascent_curve, burst_altitude, descent_curve,
-                     wind_dataset, elevation_dataset, warningcounts):
+def custom_profile(launch_datetime, ascent_curve, burst_altitude, descent_curve,
+                   wind_dataset, elevation_dataset, warningcounts, interpolate=False):
     """Make a model chain for a custom balloon situation, where the ascent and
          descent rates are determined by the given curves. The burst altitude is
          given, and the wind dataset is used for lateral movement.
      """
 
-    model_up = make_linear_model([make_custom_ascent(ascent_curve),
-                                  make_wind_velocity(wind_dataset, warningcounts)])
-    term_up = make_burst_termination(burst_altitude)
+    ascent_curve_normalized = sorted(ascent_curve, key=lambda x: x[0])
+    descent_curve_normalized = sorted(descent_curve, key=lambda x: x[0])
 
-    model_down = make_linear_model([make_custom_descent(descent_curve),
+    if len(ascent_curve_normalized[0]) == 3:
+        map(lambda x: x[0] + launch_datetime, ascent_curve_normalized)
+        model_up = make_linear_model([make_custom_ascent3(ascent_curve, interpolate),
+                                  make_wind_velocity(wind_dataset, warningcounts)])
+    else:
+        model_up = make_linear_model([make_custom_ascent2(ascent_curve, interpolate),
+                                  make_wind_velocity(wind_dataset, warningcounts)])
+    
+    if len(descent_curve_normalized[0]) == 3:
+        map(lambda x: x[0] + launch_datetime, descent_curve_normalized)
+        model_down = make_linear_model([make_custom_descent3(descent_curve, interpolate),
                                     make_wind_velocity(wind_dataset, warningcounts)])
+    else:
+        model_down = make_linear_model([make_custom_descent2(descent_curve, interpolate),
+                                    make_wind_velocity(wind_dataset, warningcounts)])
+
+    
+    term_up = make_burst_termination(burst_altitude)
 
     term_down = make_elevation_data_termination(elevation_dataset)
 
     return ((model_up, term_up), (model_down, term_down))
-
-    

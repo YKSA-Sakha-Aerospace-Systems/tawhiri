@@ -81,6 +81,10 @@ def validate_custom_curve(data):
     of CSV data. The CSV data should be in the format:
 
     altitute,rate
+
+    or
+
+    time,altitude,rate
     """
 
     # Check that the data is a list
@@ -92,11 +96,18 @@ def validate_custom_curve(data):
         if not isinstance(line, tuple):
             return False
 
-    # Check that each tuple contains 2 elements
-    for line in data:
-        if len(line) != 2:
-            return False
-
+    # Check that each tuple has the correct number of elements
+    if len(data[0]) == 2:
+        for line in data:
+            if len(line) != 2:
+                return False
+    elif len(data[0]) == 3:
+        for line in data:
+            if len(line) != 3:
+                return False
+    else:
+        return False
+    
     # Check that each element in the tuple is a float
     for line in data:
         for element in line:
@@ -201,8 +212,8 @@ def parse_request(data):
             _extract_parameter(data, "stop_datetime", _rfc3339_to_timestamp,
                                validator=lambda x: x > req['launch_datetime'])
     elif req['profile'] == PROFILE_REVERSE:
-        req['ascent_rate'] = rate_clip(_extract_parameter(data, "ascent_rate", float,
-                                                validator=lambda x: x > 0))
+        req['ascent_rate'] = _extract_parameter(data, "ascent_rate", float,
+                                                validator=lambda x: x > 0)
     elif req['profile'] == PROFILE_CUSTOM:
         req['ascent_curve'] = _extract_parameter(data, "ascent_curve",
                                                     _base64_to_curve,
@@ -213,6 +224,7 @@ def parse_request(data):
         req['descent_curve'] = _extract_parameter(data, "descent_curve",
                                                     _base64_to_curve,
                                                     validator=validate_custom_curve)
+        req['interpolate'] = _extract_parameter(data, "interpolate", bool, default=False)
     else:
         raise RequestException("Unknown profile '%s'." % req['profile'])
 
@@ -299,12 +311,14 @@ def run_prediction(req):
                                       ruaumoko_ds(),
                                       warningcounts)
     elif req['profile'] == PROFILE_CUSTOM:
-        stages = models.custom_profile(req['ascent_curve'],
+        stages = models.custom_profile(req['launch_datetime'],
+                                       req['ascent_curve'],
                                        req['burst_altitude'],
                                        req['descent_curve'],
                                        tawhiri_ds,
                                        ruaumoko_ds(),
-                                       warningcounts)
+                                       warningcounts,
+                                       req['interpolate'])
     else:
         raise InternalException("No implementation for known profile.")
 
