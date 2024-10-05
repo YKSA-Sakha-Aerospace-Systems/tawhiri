@@ -69,11 +69,11 @@ def _resolve_constraints(constraints, c_last, t, alt, rate):
             break
         j += 1
 
-    k = max(i, j)
-    if k >= len(constraints):
-        k = len(constraints)-1
+    c = max(i, j)
+    if c >= len(constraints):
+        c = len(constraints)-1
 
-    return k, constraints[k][2]
+    return c, constraints[c][2]
 
 ## Up/Down Models #############################################################
 
@@ -114,7 +114,7 @@ def make_custom_ascent3(ascent_curve, interpolate=False):
         nonlocal c_last, rate
         c_last_last = c_last
         rate_last = rate
-        c_last, rate = _resolve_constraints(ascent_curve, c_last, t, alt, rate)
+        c_last, rate = _resolve_constraints(ascent_curve, c_last_last, t, alt, rate_last)
 
         if interpolate:
             rate = rate + (rate - rate_last) * (t - ascent_curve[c_last_last][0]) / \
