@@ -326,8 +326,8 @@ def custom_profile(launch_datetime, ascent_curve, burst_altitude, descent_curve,
          given, and the wind dataset is used for lateral movement.
      """
 
-    ascent_curve_normalized = sorted(ascent_curve, key=lambda x: x[0])
-    descent_curve_normalized = sorted(descent_curve, key=lambda x: x[0])
+    ascent_curve_normalized = ascent_curve # removed sorting
+    descent_curve_normalized = descent_curve    
 
     if len(ascent_curve_normalized[0]) == 3:
         model_up = make_linear_model([make_custom_ascent3(launch_datetime, ascent_curve_normalized, interpolate),
