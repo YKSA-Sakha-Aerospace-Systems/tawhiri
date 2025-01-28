@@ -51,29 +51,38 @@ def _resolve_rate(x, y, x_idx=0, r_idx=1, interpolate=False):
     return y[-1][r_idx]
 
 
-def _resolve_constraints(constraints, c_last, t, alt, rate):
-    i = c_last
-    while i < len(constraints):
-        if constraints[i][0] == -1 or constraints[i][0] > t:
+def _process_constraints(input_data):
+    constraints = input_data.copy()
+
+    constraints.append([-1, -1, 0])
+
+    # recompute and convert to time-rate curve
+    time_rate_curve = [] # [time, rate]
+
+    rate = constraints[0][2]
+    alt = 0
+    t = 0
+    t_prev = 0
+
+    dt = 30 # seconds
+
+    # perform full simulation
+    while t <= (24 * 3600):
+        if len(constraints) == 1:
             break
-        i += 1
 
-    j = c_last
-    while j < len(constraints):
-        if constraints[j][1] != -1:
-            if rate >= 0 and constraints[j][1] >= alt:
-                break
-            elif rate < 0 and constraints[j][1] <= alt:
-                break
-        else:
-            break
-        j += 1
+        if  (constraints[0][0] != -1 and t >= constraints[0][0]) or \
+            (constraints[0][1] != -1 and alt >= constraints[0][1]) and (rate > 0) or \
+            (constraints[0][1] != -1 and alt <= constraints[0][1]) and (rate < 0):
+            time_rate_curve.append([t_prev, rate])
+            constraints.pop(0)
+            rate = constraints[0][2]
+            t_prev = t
 
-    c = max(i, j)
-    if c >= len(constraints):
-        c = len(constraints)-1
+        alt += rate * dt
+        t += dt
 
-    return c, constraints[c][2]
+    return time_rate_curve
 
 ## Up/Down Models #############################################################
 
@@ -107,20 +116,12 @@ def make_custom_ascent3(launch_datetime, ascent_curve, interpolate=False):
         rate is the new rate.
     """
 
-    c_last = 0
-    rate = 0.0
+    curve = _process_constraints(ascent_curve)
 
     def custom_ascent(t_abs, lat, lng, alt):
-        nonlocal c_last, rate
+        nonlocal curve
         t =  t_abs - launch_datetime
-        c_last_last = c_last
-        rate_last = rate
-        c_last, rate = _resolve_constraints(
-            ascent_curve, c_last_last, t, alt, rate_last)
-
-        if interpolate:
-            rate = rate + (rate - rate_last) * (t - ascent_curve[c_last_last][0]) / \
-                (ascent_curve[c_last][0] - ascent_curve[c_last_last][0])
+        rate = _resolve_rate(t, curve, x_idx=0, r_idx=1, interpolate=interpolate)        
 
         return 0.0, 0.0, rate
 
@@ -170,20 +171,13 @@ def make_custom_descent3(launch_datetime, descent_curve, interpolate=False):
     """Works the same as make_custom_ascent3, but for descent curves.
     """
 
-    c_last = 0
-    rate = 0.0
+    curve = _process_constraints(descent_curve)
 
     def custom_descent(t_abs, lat, lng, alt):
-        nonlocal c_last, rate
-        t =  t_abs - launch_datetime
-        c_last_last = c_last
-        rate_last = rate
-        c_last, rate = _resolve_constraints(
-            descent_curve, c_last, t, alt, rate)
+        nonlocal curve
 
-        if interpolate:
-            rate = rate + (rate - rate_last) * (t - descent_curve[c_last_last][0]) / \
-                (descent_curve[c_last][0] - descent_curve[c_last_last][0])
+        t =  t_abs - launch_datetime
+        rate = _resolve_rate(t, curve, x_idx=0, r_idx=1, interpolate=interpolate)
 
         return 0.0, 0.0, -rate
 
