@@ -19,22 +19,29 @@
 Provide the HTTP API for Tawhiri.
 """
 
-from flask import Flask, jsonify, request, g
+from flask import Flask, jsonify, request, g, send_file
 from datetime import datetime
 import time
 import strict_rfc3339
+from io import BytesIO
+import base64
 
 from tawhiri import solver, models
 from tawhiri.dataset import Dataset as WindDataset
 from tawhiri.warnings import WarningCounts
+from tawhiri.csvformatter import format_csv, fix_data_longitudes
+from tawhiri.kmlformatter import format_kml
 from ruaumoko import Dataset as ElevationDataset
 
 app = Flask(__name__)
 
-API_VERSION = 1
+API_VERSION = 2
 LATEST_DATASET_KEYWORD = "latest"
 PROFILE_STANDARD = "standard_profile"
 PROFILE_FLOAT = "float_profile"
+PROFILE_REVERSE = "reverse_profile"
+STANDARD_FORMAT = "json"
+PROFILE_CUSTOM = "custom_profile"
 
 
 # Util functions ##############################################################
@@ -57,6 +64,59 @@ def _timestamp_to_rfc3339(dt):
     Convert from a UNIX timestamp to a RFC3339 timestamp.
     """
     return strict_rfc3339.timestamp_to_rfc3339_utcoffset(dt)
+
+def _base64_to_curve(data):
+    """
+    Convert a base64 encoded CSV to a list of tuples.
+    """
+    data = base64.b64decode(data)
+    data = data.split(b"\n")
+    return [tuple(map(float, line.split(b","))) for line in data if line]
+
+
+# Custom profile helpers ######################################################
+def validate_custom_curve(data):
+    """
+    Validate the custom profile data.
+
+    The custom profile data is a list of tuples, each tuple containing one line
+    of CSV data. The CSV data should be in the format:
+
+    altitute,rate
+
+    or
+
+    time,altitude,rate
+    """
+
+    # Check that the data is a list
+    if not isinstance(data, list):
+        return False
+
+    # Check that each element is a tuple
+    for line in data:
+        if not isinstance(line, tuple):
+            return False
+
+    # Check that each tuple has the correct number of elements
+    if len(data[0]) == 2:
+        for line in data:
+            if len(line) != 2:
+                return False
+    elif len(data[0]) == 3:
+        for line in data:
+            if len(line) != 3:
+                return False
+    else:
+        return False
+    
+    # Check that each element in the tuple is a float
+    for line in data:
+        for element in line:
+            if not isinstance(element, float):
+                return False
+
+    return True
 
 
 # Exceptions ##################################################################
@@ -102,6 +162,19 @@ class NotYetImplementedException(APIException):
     status_code = 501
 
 
+def rate_clip(rate, minimum_rate=0.2):
+    """
+    Lower-bound clipping for ascent and descent rates
+    """
+
+    if rate < minimum_rate:
+        return minimum_rate
+    else:
+        return rate
+
+
+
+
 # Request #####################################################################
 def parse_request(data):
     """
@@ -121,14 +194,19 @@ def parse_request(data):
     req['launch_altitude'] = \
         _extract_parameter(data, "launch_altitude", float, ignore=True)
 
+    req['format'] = \
+        _extract_parameter(data, "format", str, STANDARD_FORMAT)
+
     # If no launch altitude provided, use Ruaumoko to look it up
     if req['launch_altitude'] is None:
         try:
             req['launch_altitude'] = ruaumoko_ds().get(req['launch_latitude'],
                                                        req['launch_longitude'])
         except Exception:
-            raise InternalException("Internal exception experienced whilst " +
-                                    "looking up 'launch_altitude'.")
+            # Cannot query Ruaumoko - just set launch altitude to 0.
+            req['launch_altitude'] = 0.0
+            # raise InternalException("Internal exception experienced whilst " +
+            #                         "looking up 'launch_altitude'.")
 
     # Prediction profile
     req['profile'] = _extract_parameter(data, "profile", str,
@@ -137,22 +215,36 @@ def parse_request(data):
     launch_alt = req["launch_altitude"]
 
     if req['profile'] == PROFILE_STANDARD:
-        req['ascent_rate'] = _extract_parameter(data, "ascent_rate", float,
-                                                validator=lambda x: x > 0)
+        req['ascent_rate'] = rate_clip(_extract_parameter(data, "ascent_rate", float,
+                                                validator=lambda x: x > 0))
         req['burst_altitude'] = \
             _extract_parameter(data, "burst_altitude", float,
                                validator=lambda x: x > launch_alt)
-        req['descent_rate'] = _extract_parameter(data, "descent_rate", float,
-                                                 validator=lambda x: x > 0)
+        req['descent_rate'] = rate_clip(_extract_parameter(data, "descent_rate", float,
+                                                 validator=lambda x: x > 0))
     elif req['profile'] == PROFILE_FLOAT:
-        req['ascent_rate'] = _extract_parameter(data, "ascent_rate", float,
-                                                validator=lambda x: x > 0)
+        req['ascent_rate'] = rate_clip(_extract_parameter(data, "ascent_rate", float,
+                                                validator=lambda x: x > 0))
         req['float_altitude'] = \
             _extract_parameter(data, "float_altitude", float,
                                validator=lambda x: x > launch_alt)
         req['stop_datetime'] = \
             _extract_parameter(data, "stop_datetime", _rfc3339_to_timestamp,
                                validator=lambda x: x > req['launch_datetime'])
+    elif req['profile'] == PROFILE_REVERSE:
+        req['ascent_rate'] = _extract_parameter(data, "ascent_rate", float,
+                                                validator=lambda x: x > 0)
+    elif req['profile'] == PROFILE_CUSTOM:
+        req['ascent_curve'] = _extract_parameter(data, "ascent_curve",
+                                                    _base64_to_curve,
+                                                    validator=validate_custom_curve)
+        req['burst_altitude'] = \
+            _extract_parameter(data, "burst_altitude", float,
+                               validator=lambda x: x > launch_alt)                                                  
+        req['descent_curve'] = _extract_parameter(data, "descent_curve",
+                                                    _base64_to_curve,
+                                                    validator=validate_custom_curve)
+        req['interpolate'] = _extract_parameter(data, "interpolate", bool, default=False)
     else:
         raise RequestException("Unknown profile '%s'." % req['profile'])
 
@@ -162,6 +254,70 @@ def parse_request(data):
 
     return req
 
+
+def parse_request_ruaumoko(data):
+    """
+    Parse the request.
+    """
+    req = {"version": API_VERSION}
+
+    # Generic fields
+    req['latitude'] = \
+        _extract_parameter(data, "latitude", float,
+                           validator=lambda x: -90 <= x <= 90)
+    req['longitude'] = \
+        _extract_parameter(data, "longitude", float,
+                           validator=lambda x: 0 <= x < 360)
+
+    # Response dict
+    resp = {
+        "request": req,
+    }
+
+    warningcounts = WarningCounts()
+
+    try:
+        resp['altitude'] = ruaumoko_ds().get(req['latitude'],req['longitude'])
+    except Exception:
+        raise InternalException("Internal exception experienced whilst " +
+                                "querying ruaumoko.")
+    
+    resp["warnings"] = warningcounts.to_dict()
+
+    return resp
+
+def parse_request_datasetcheck(data):
+    """
+    Dataset Check Request - try and find a dataset, any dataset, and return its info is there is one.
+    """
+    req = {"version": API_VERSION}
+
+    # Response dict
+    resp = {
+        "request": req,
+    }
+
+    warningcounts = WarningCounts()
+
+    # Find wind data location
+    ds_dir = app.config.get('WIND_DATASET_DIR', WindDataset.DEFAULT_DIRECTORY)
+
+    # Dataset
+    try:
+        tawhiri_ds = WindDataset.open_latest(persistent=True, directory=ds_dir)
+        # Note that hours and minutes are set to 00 as Tawhiri uses hourly datasets
+        resp['request']['dataset'] = \
+            tawhiri_ds.ds_time.strftime("%Y-%m-%dT%H:00:00Z")
+    except IOError:
+        raise InvalidDatasetException("No matching dataset found.")
+    except ValueError as e:
+        raise InvalidDatasetException("Could not find any dataset.")
+    except Exception as e:
+        raise InvalidDatasetException("Could not find any dataset.")
+    
+    resp["warnings"] = warningcounts.to_dict()
+
+    return resp
 
 def _extract_parameter(data, parameter, cast, default=None, ignore=False,
                        validator=None):
@@ -233,14 +389,35 @@ def run_prediction(req):
                                       req['stop_datetime'],
                                       tawhiri_ds,
                                       warningcounts)
+    elif req['profile'] == PROFILE_REVERSE:
+        stages = models.reverse_profile(req['ascent_rate'],
+                                      tawhiri_ds,
+                                      ruaumoko_ds(),
+                                      warningcounts)
+    elif req['profile'] == PROFILE_CUSTOM:
+        stages = models.custom_profile(req['launch_datetime'],
+                                       req['ascent_curve'],
+                                       req['burst_altitude'],
+                                       req['descent_curve'],
+                                       tawhiri_ds,
+                                       ruaumoko_ds(),
+                                       warningcounts,
+                                       req['interpolate'])
     else:
         raise InternalException("No implementation for known profile.")
 
     # Run solver
     try:
-        result = solver.solve(req['launch_datetime'], req['launch_latitude'],
-                              req['launch_longitude'], req['launch_altitude'],
-                              stages)
+        if req['profile'] == PROFILE_REVERSE:
+            # For the reverse prediction we simply set the time-step to be negative!
+            result = solver.solve(req['launch_datetime'], req['launch_latitude'],
+                                req['launch_longitude'], req['launch_altitude'],
+                                stages, dt=-60.0)
+        else:
+            result = solver.solve(req['launch_datetime'], req['launch_latitude'],
+                                req['launch_longitude'], req['launch_altitude'],
+                                stages)
+
     except Exception as e:
         raise PredictionException("Prediction did not complete: '%s'." %
                                   str(e))
@@ -250,6 +427,28 @@ def run_prediction(req):
         resp['prediction'] = _parse_stages(["ascent", "descent"], result)
     elif req['profile'] == PROFILE_FLOAT:
         resp['prediction'] = _parse_stages(["ascent", "float"], result)
+    elif req['profile'] == PROFILE_REVERSE:
+        resp['prediction'] = _parse_stages(["ascent", "descent"], result)
+        # Extract the last entry as our launch site estimate.
+        _launch_site = resp['prediction'][-1]['trajectory'][-1]
+        resp['launch_estimate'] = {
+            'latitude': _launch_site['latitude'], 
+            'longitude': _launch_site['longitude'],
+            'altitude': _launch_site['altitude'],
+            'datetime': _timestamp_to_rfc3339(req['launch_datetime'])
+        }
+    elif req['profile'] == PROFILE_CUSTOM:
+        resp['prediction'] = _parse_stages(["ascent", "descent"], result)
+        # Extract the last entry as our launch site estimate.
+        _launch_site = resp['prediction'][-1]['trajectory'][-1]
+        resp['launch_estimate'] = {
+            'latitude': _launch_site['latitude'], 
+            'longitude': _launch_site['longitude'],
+            'altitude': _launch_site['altitude'],
+            'datetime': _timestamp_to_rfc3339(req['launch_datetime'])
+        }
+    elif req['profile'] == PROFILE_CUSTOM:
+        resp['prediction'] = _parse_stages(["ascent", "descent"], result)
     else:
         raise InternalException("No implementation for known profile.")
 
@@ -293,6 +492,52 @@ def main():
     response = run_prediction(parse_request(request.args))
     g.request_complete_time = time.time()
     response['metadata'] = _format_request_metadata()
+
+    # Format the result data as per the users request
+    if response["request"]["format"] == "csv":
+        _formatted = format_csv(fix_data_longitudes(response))
+        return send_file(
+            BytesIO(_formatted['data'].encode()),
+            mimetype="text/csv",
+            as_attachment=True,
+            attachment_filename=_formatted['filename']
+        )
+
+    elif response["request"]["format"] == "kml":
+        _formatted = format_kml(fix_data_longitudes(response))
+        return send_file(
+            BytesIO(_formatted['data'].encode()),
+            as_attachment=True,
+            attachment_filename=_formatted['filename']
+        )
+
+    elif response["request"]["format"] == "json":
+        return jsonify(response)
+    else:
+        raise InternalException("Format not supported: " + response["request"]["format"])
+
+
+
+@app.route('/api/ruaumoko/', methods=['GET'])
+def main_ruaumoko():
+    """
+    Ruaumoko endpoint
+    """
+    g.request_start_time = time.time()
+    response = parse_request_ruaumoko(request.args)
+    g.request_complete_time = time.time()
+    response['metadata'] = _format_request_metadata()
+    return jsonify(response)
+
+@app.route('/api/datasetcheck', methods=['GET'])
+def main_datasetcheck():
+    """
+    Dataset Check Endpoint
+    """
+    g.request_start_time = time.time()
+    response = parse_request_datasetcheck(request.args)
+    g.request_complete_time = time.time()
+    response['metadata'] = _format_request_metadata()
     return jsonify(response)
 
 
@@ -309,6 +554,14 @@ def handle_exception(error):
     g.request_complete_time = time.time()
     response['metadata'] = _format_request_metadata()
     return jsonify(response), error.status_code
+
+
+# Uncomment for local testing
+# @app.after_request # blueprint can also be app~~
+# def after_request(response):
+#     header = response.headers
+#     header['Access-Control-Allow-Origin'] = '*'
+#     return response
 
 
 def _format_request_metadata():

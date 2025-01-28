@@ -14,6 +14,9 @@ API Endpoint
 There is a single endpoint, http://predict.cusf.co.uk/api/v1/, to which ``GET``
 requests must be made with request parameters in the query string.
 
+The SondeHub hosted version of this API is available at: https://api.v2.sondehub.org/tawhiri
+
+
 Profiles
 ~~~~~~~~
 Tawhiri supports multiple flight profiles which contain a description of the
@@ -22,6 +25,7 @@ model chain to be used when predicting a specific flight type.
 Tawhiri currently supports the following profiles:
  * Standard Profile - ``standard_profile``
  * Float Profile - ``float_profile``
+ * Reverse Profile - ``reverse_profile``
 
 Standard Profile
 ^^^^^^^^^^^^^^^^
@@ -38,6 +42,16 @@ altitude to a float altitude which persists for some amount of time before
 stopping. Descent is not predicted when using this profile.
 
 The API refers to this profile as ``float_profile``.
+
+Reverse Profile
+^^^^^^^^^^^^^
+A profile for back-tracking the path of a balloon in flight, to estimate the
+launch site. This profile requires a known position (lat, lon, altitude) of
+the flight be provided (as launch latitude / longitude / altitude), along with
+a time and an ascent rate. The time provided should be the time the balloon was
+at the provided position - Tawhiri will esimate the launch time.
+
+The API refers to this profile as ``reverse_profile``.
 
 Requests
 ~~~~~~~~
@@ -77,6 +91,10 @@ addition, each profile accepts various additional parameters.
      - optional
      - Defaults to elevation at launch location looked up using Ruaumoko_.
      - Elevation of launch location in metres above sea level.
+   * - ``format``
+     - optional
+     - ``json``
+     - Output format of data. Defaults to ``json``, but can be ``kml`` and ``csv``.
 
 Standard Profile
 ^^^^^^^^^^^^^^^^
@@ -136,12 +154,16 @@ general parameters above.
 
 Responses
 ~~~~~~~~~
-Responses are returned in JSON and consist of various fragments. Successful
+Responses are returned in JSON by default and consist of various fragments. Successful
 responses contain ``request``, ``prediction`` and ``metadata`` fragments.
 Error responses contain ``error`` and ``metadata`` fragments only.
 
 The predictor API returns HTTP Status Code ``200 OK`` for all successful
 predictions.
+
+If the requested ``format`` was ``kml`` or ``csv``, then that format will be 
+returned from the API, with HTTP headers set to indicate an attachment, with an
+appropriate filename.
 
 Request Fragment
 ^^^^^^^^^^^^^^^^
@@ -239,6 +261,21 @@ Example:
      "complete_datetime": "2014-08-19T21:32:52.036925Z",
      "start_datetime": "2014-08-19T21:32:51.929028Z"
    }
+
+Launch Estimate Fragment
+^^^^^^^^^^^^^^^^^^^^^^^^
+For reverse_profile predictions, the estimated launch site and launch time is
+included as a fragment, for easy access.
+
+.. code-block:: json
+
+    "launch_estimate": {
+      "altitude": 3.75,
+      "datetime": "2021-10-03T23:14:26Z",
+      "latitude": -34.95080634777029,
+      "longitude": 138.51215389728895
+    }
+
 
 Error Fragment
 ^^^^^^^^^^^^^^
