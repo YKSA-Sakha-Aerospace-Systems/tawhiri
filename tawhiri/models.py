@@ -82,6 +82,9 @@ def _process_constraints(input_data):
         alt += rate * dt
         t += dt
 
+    if t_prev < t:
+        time_rate_curve.append([t_prev, rate])
+
     return time_rate_curve
 
 ## Up/Down Models #############################################################
